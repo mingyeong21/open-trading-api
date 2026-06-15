@@ -176,3 +176,12 @@ backtester/examples/output/*.py
 settings.local.json
 
 .serena/
+
+# Samsung auto trader secrets and runtime files
+samsung_auto_trader/.env
+samsung_auto_trader/token_cache.json
+samsung_auto_trader/logs/
+
+# Python cache
+__pycache__/
+*.pyc
