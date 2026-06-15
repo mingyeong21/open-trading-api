@@ -2,66 +2,9 @@
 
 한국투자증권 Open API 모의투자 환경을 활용한 삼성전자(005930) 자동매매 시스템입니다.
 
-## Project Goal
-
-이 프로젝트는 실제 투자 수익을 목적으로 하는 프로그램이 아니라, 한국투자증권 Open API를 사용하여 다음 과정을 학습하고 구현하는 교육용 프로젝트입니다.
-
-- REST API 인증
-- 접근토큰 캐싱
-- 현재가 조회
-- 계좌 잔고 조회
-- 모의투자 주문 요청
-- 주문 후 보유 수량 확인
-- 단순 매매 전략 구현
-- 거래 가능 시간 제한
-- 로그 기록
-
-## Target
-
-- Stock: Samsung Electronics
-- Code: 005930
-- Environment: Mock trading only
-- API style: REST polling only
-- WebSocket: Not used
-
-## Folder Structure
-
-```text
-samsung_auto_trader/
-├── main.py
-├── config.py
-├── auth.py
-├── kis_client.py
-├── strategy.py
-├── trader.py
-├── logger.py
-├── requirements.txt
-├── README.md
-└── .env.example
-```
-
-## 파일 설명
-
-파일명	설명
-main.py	프로그램의 전체 실행 흐름을 담당
-config.py	API 키, 계좌 정보, 종목코드 등 설정값 관리
-auth.py	한국투자증권 API 접근 토큰 발급
-kis_client.py	시세 조회, 호가 조회, 주문 요청 등 API 통신 담당
-strategy.py	매수/매도 조건 판단
-trader.py	전략 결과에 따른 실제 주문 실행
-logger.py	실행 결과 및 주문 로그 기록
-.env.example	환경변수 예시 파일
-requirements.txt	실행에 필요한 Python 패키지 목록
-
-# Samsung Auto Trader
-
-한국투자증권 Open API를 이용하여 삼성전자(005930)를 대상으로 자동매매 흐름을 구현한 프로젝트입니다.
-
-본 프로젝트는 실제 수익 창출보다는 **증권사 API를 활용한 자동매매 시스템의 기본 구조를 이해하고 구현하는 것**을 목적으로 합니다.
-
 ---
 
-## 1. 프로젝트 개요
+## 프로젝트 개요
 
 이 프로젝트는 삼성전자 주식을 대상으로 다음과 같은 자동매매 과정을 구현합니다.
 
@@ -73,7 +16,7 @@ requirements.txt	실행에 필요한 Python 패키지 목록
 
 ---
 
-## 2. 개발 목적
+## 개발 목적
 
 본 프로젝트의 목적은 단순한 매매 전략 구현이 아니라, 실제 금융 API를 활용하여 자동매매 시스템의 전체 흐름을 직접 구현하는 것입니다.
 
@@ -88,7 +31,99 @@ requirements.txt	실행에 필요한 Python 패키지 목록
 
 ---
 
-## 3. 프로젝트 구조
+## Strategy Improvement
+
+### Initial Idea: Fixed Price Gap Strategy
+
+처음에는 삼성전자(005930)의 현재가를 조회한 뒤, 현재가를 기준으로 일정 금액 차이를 둔 지정가 주문 전략을 고려했습니다.
+
+예를 들어 다음과 같은 방식입니다.
+
+```text
+Buy order price  = current price - 1,000 KRW
+Sell order price = current price + 1,000 KRW
+```
+
+이 방식은 구조가 단순하고 이해하기 쉽다는 장점이 있습니다. 현재가를 기준으로 아래 가격에 매수 주문을 넣고, 위 가격에 매도 주문을 넣기 때문에 직관적으로 “싸게 사고 비싸게 파는” 형태의 전략처럼 보입니다.
+
+그러나 실제 테스트 관점에서는 한계가 있었습니다.
+
+### Problem with the Fixed ±1,000 KRW Strategy
+
+삼성전자는 거래량이 많고 가격이 안정적인 대형주이기 때문에, 짧은 시간 안에 현재가 기준으로 ±1,000원만큼 충분히 움직이지 않을 수 있습니다.
+
+따라서 다음과 같은 문제가 발생할 수 있습니다.
+
+```text
+1. 매수 주문이 현재가보다 너무 낮게 들어가 체결되지 않을 수 있음
+2. 매도 주문이 현재가보다 너무 높게 들어가 체결되지 않을 수 있음
+3. 주문은 생성되지만 실제 체결 여부를 확인하기 어려움
+4. 자동매매 시스템의 핵심 흐름인 주문 → 체결 확인 → 다음 판단 과정을 테스트하기 어려움
+5. 가격 차이를 왜 1,000원으로 설정했는지 전략적으로 설명하기 어려움
+```
+
+즉, 고정 금액 차이를 사용하는 전략은 단순하지만, 실제 모의투자 환경에서 체결 가능성이 낮고 전략적 근거가 부족하다는 단점이 있었습니다.
+
+### Improved Strategy: Moving Average Momentum Strategy
+
+이 문제를 보완하기 위해 현재가 기준의 고정 가격 차이 전략 대신, 단순 이동평균 기반 추세추종 전략을 사용했습니다.
+
+이 전략은 REST API를 통해 일정 간격으로 삼성전자의 현재가를 조회하고, 프로그램 내부에서 최근 가격 기록을 저장한 뒤 단기 이동평균과 장기 이동평균을 비교합니다.
+
+```text
+Short moving average = average of recent 3 polled prices
+Long moving average  = average of recent 8 polled prices
+```
+
+여기서 3개와 8개는 분봉 데이터가 아니라, 프로그램이 REST API polling으로 수집한 현재가 개수 기준입니다. 예를 들어 polling interval이 120초라면, 최근 3개 평균은 약 6분, 최근 8개 평균은 약 16분 정도의 가격 흐름을 의미합니다.
+
+### Trading Rules
+
+이 프로젝트의 매매 규칙은 다음과 같습니다.
+
+```text
+1. 현재가를 조회한다.
+2. 최근 가격 기록을 업데이트한다.
+3. 단기 이동평균과 장기 이동평균을 계산한다.
+4. 삼성전자를 보유하지 않은 상태에서 단기 이동평균이 장기 이동평균보다 높으면 상승 흐름으로 판단해 1주 매수한다.
+5. 삼성전자를 보유 중인 경우, 다음 조건 중 하나가 충족되면 1주 매도한다.
+   - 매수가 대비 +0.4% 이상 수익 발생
+   - 매수가 대비 -0.3% 이하 손실 발생
+   - 단기 이동평균이 장기 이동평균 아래로 하락
+```
+
+### Why Moving Average Strategy?
+
+이동평균 전략을 사용한 이유는 다음과 같습니다.
+
+```text
+1. 단순히 현재가 ±1,000원으로 주문하는 방식보다 전략적 근거가 명확함
+2. 최근 가격 흐름을 반영할 수 있음
+3. REST API polling 방식만으로 구현 가능함
+4. 별도의 WebSocket이나 실시간 스트리밍 없이도 작동함
+5. 모의투자 API 요청 제한을 고려해 불필요한 API 호출을 줄일 수 있음
+6. 익절과 손절 조건을 함께 두어 기본적인 리스크 관리 구조를 포함할 수 있음
+```
+
+이 전략은 실제 수익을 보장하기 위한 고도화된 투자 전략이 아니라, 한국투자증권 Open API를 활용해 인증, 현재가 조회, 잔고 조회, 주문 요청, 체결 확인, 리스크 관리 흐름을 학습하기 위한 교육용 자동매매 전략입니다.
+
+### Summary
+
+초기 고정 가격 차이 전략은 단순하지만 체결 가능성이 낮다는 문제가 있었습니다. 이를 보완하기 위해 본 프로젝트에서는 최근 가격 흐름을 반영하는 이동평균 기반 전략을 사용했습니다. 이를 통해 단순한 주문 실행뿐 아니라, 매수 조건, 매도 조건, 익절, 손절, 추세 반전 대응을 포함한 기본적인 자동매매 구조를 구현했습니다.
+
+---
+
+## Target
+
+- Stock: Samsung Electronics
+- Code: 005930
+- Environment: Mock trading only
+- API style: REST polling only
+- WebSocket: Not used
+  
+---
+
+## 프로젝트 구조
 
 ```text
 samsung_auto_trader/
@@ -103,10 +138,7 @@ samsung_auto_trader/
 ├── trader.py
 └── logger.py
 ```
-
----
-
-## 4. 파일 설명
+### 파일 설명
 
 | 파일명                | 설명                              |
 | ------------------ | ------------------------------- |
@@ -119,60 +151,6 @@ samsung_auto_trader/
 | `logger.py`        | 실행 결과 및 주문 로그 기록                |
 | `.env.example`     | 환경변수 예시 파일                      |
 | `requirements.txt` | 실행에 필요한 Python 패키지 목록           |
-
----
-
-## 5. 실행 환경
-
-* Python 3.9 이상
-* Windows PowerShell 또는 VS Code Terminal
-* 한국투자증권 Open API 계정
-* 모의투자 또는 실제투자 계좌
-
----
-
-## 6. 설치 및 실행 방법
-
-### 6.1 저장소 클론
-
-```bash
-git clone https://github.com/본인아이디/레포지토리이름.git
-cd 레포지토리이름
-```
-
-### 6.2 가상환경 생성
-
-```bash
-python -m venv .venv
-```
-
-### 6.3 가상환경 실행
-
-Windows PowerShell 기준:
-
-```bash
-.venv\Scripts\Activate.ps1
-```
-
-### 6.4 패키지 설치
-
-```bash
-pip install -r requirements.txt
-```
-
-### 6.5 환경변수 설정
-
-`.env.example` 파일을 참고하여 `.env` 파일을 생성합니다.
-
-```env
-APP_KEY=your_app_key
-APP_SECRET=your_app_secret
-ACCOUNT_NO=your_account_number
-PRODUCT_CODE=01
-BASE_URL=your_base_url
-```
-
-주의: `.env` 파일에는 개인 API 키와 계좌 정보가 포함되므로 GitHub에 업로드하지 않습니다.
 
 ---
 
