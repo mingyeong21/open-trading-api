@@ -1,3 +1,4 @@
+import time
 from typing import Any
 
 import requests
@@ -9,8 +10,8 @@ from logger import logger
 # =========================
 # KIS mock trading TR_IDs
 # =========================
-# These are separated here so they can be edited easily
-# if KIS documentation or mock trading settings differ.
+# Mock trading TR_ID values.
+# If KIS Developers documentation changes, edit values here.
 
 TR_ID_CURRENT_PRICE = "FHKST01010100"
 
@@ -28,13 +29,30 @@ class KISClient:
     - current price lookup
     - account balance lookup
     - mock stock order submission
+
+    Safety design:
+    - REST only
+    - mock trading only
+    - conservative rate-limit waiting
+    - retry handling for temporary API errors
     """
 
     def __init__(self, config: Config, access_token: str):
         self.config = config
         self.access_token = access_token
 
+    def _rate_limit_wait(self, seconds: float = 1.5) -> None:
+        """
+        Wait between API calls to avoid KIS mock API rate limits.
+
+        KIS mock trading may reject too many requests in a short time.
+        """
+        time.sleep(seconds)
+
     def _headers(self, tr_id: str) -> dict[str, str]:
+        """
+        Create common request headers for KIS API calls.
+        """
         return {
             "content-type": "application/json; charset=utf-8",
             "authorization": f"Bearer {self.access_token}",
@@ -54,9 +72,13 @@ class KISClient:
         body: dict[str, Any] | None = None,
         retries: int = 2,
     ) -> dict[str, Any]:
+        """
+        Send a REST API request with simple retry and rate-limit handling.
+        """
         url = f"{self.config.base_url}{path}"
         headers = self._headers(tr_id)
 
+        # KIS POST order APIs generally require hashkey.
         if body is not None and method.upper() == "POST":
             headers["hashkey"] = self.get_hashkey(body)
 
@@ -64,6 +86,8 @@ class KISClient:
 
         for attempt in range(1, retries + 2):
             try:
+                self._rate_limit_wait()
+
                 response = requests.request(
                     method=method,
                     url=url,
@@ -78,24 +102,53 @@ class KISClient:
                 except ValueError:
                     data = {"raw_text": response.text}
 
-                if response.status_code == 200:
+                # KIS often returns HTTP 200 even when rt_cd indicates failure.
+                if response.status_code == 200 and data.get("rt_cd") != "1":
                     return data
 
                 logger.error(
-                    "API error: status=%s, response=%s",
+                    "API error on attempt %s: status=%s, response=%s",
+                    attempt,
                     response.status_code,
                     data,
                 )
+
+                # EGW00201: too many requests per second.
+                if data.get("msg_cd") == "EGW00201":
+                    wait_seconds = 10
+                    logger.info(
+                        "Rate limit exceeded. Waiting %s seconds before retry.",
+                        wait_seconds,
+                    )
+                    time.sleep(wait_seconds)
+
+                elif attempt <= retries:
+                    wait_seconds = 3 * attempt
+                    logger.info(
+                        "Waiting %s seconds before retry.",
+                        wait_seconds,
+                    )
+                    time.sleep(wait_seconds)
 
             except requests.RequestException as error:
                 last_error = error
                 logger.error("Request error on attempt %s: %s", attempt, error)
 
+                if attempt <= retries:
+                    wait_seconds = 3 * attempt
+                    logger.info(
+                        "Waiting %s seconds before retry.",
+                        wait_seconds,
+                    )
+                    time.sleep(wait_seconds)
+
         raise RuntimeError(f"API request failed. Last error: {last_error}")
 
     def get_hashkey(self, body: dict[str, Any]) -> str:
         """
-        KIS POST order APIs generally require a hashkey.
+        Get hashkey for KIS POST order request.
+
+        The order-cash endpoint usually requires a hashkey header.
         """
         url = f"{self.config.base_url}/uapi/hashkey"
 
@@ -104,6 +157,8 @@ class KISClient:
             "appkey": self.config.app_key,
             "appsecret": self.config.app_secret,
         }
+
+        self._rate_limit_wait()
 
         response = requests.post(
             url,
@@ -117,7 +172,7 @@ class KISClient:
         except ValueError:
             raise RuntimeError(f"Hashkey response is not JSON: {response.text}")
 
-        if response.status_code != 200:
+        if response.status_code != 200 or data.get("rt_cd") == "1":
             raise RuntimeError(f"Hashkey request failed: {response.status_code}, {data}")
 
         hashkey = data.get("HASH")
@@ -128,7 +183,15 @@ class KISClient:
         return hashkey
 
     def get_current_price(self) -> int:
+        """
+        Get current price of Samsung Electronics.
+        """
         path = "/uapi/domestic-stock/v1/quotations/inquire-price"
+
+        logger.info(
+            "Requesting current price for stock_code=%s",
+            self.config.stock_code,
+        )
 
         params = {
             "FID_COND_MRKT_DIV_CODE": "J",
@@ -149,11 +212,19 @@ class KISClient:
             raise RuntimeError(f"Current price not found in response: {data}")
 
         price = int(price_text)
-        logger.info("Current price of %s: %s KRW", self.config.stock_code, price)
+
+        logger.info(
+            "Current price of %s: %s KRW",
+            self.config.stock_code,
+            price,
+        )
 
         return price
 
     def get_holding_quantity(self) -> int:
+        """
+        Get current holding quantity of Samsung Electronics.
+        """
         cano, acnt_prdt_cd = split_account(self.config.account)
 
         path = "/uapi/domestic-stock/v1/trading/inquire-balance"
@@ -185,7 +256,13 @@ class KISClient:
             if item.get("pdno") == self.config.stock_code:
                 qty_text = item.get("hldg_qty", "0")
                 qty = int(float(qty_text))
-                logger.info("Holding quantity of %s: %s", self.config.stock_code, qty)
+
+                logger.info(
+                    "Holding quantity of %s: %s",
+                    self.config.stock_code,
+                    qty,
+                )
+
                 return qty
 
         logger.info("No holding found for %s.", self.config.stock_code)
@@ -199,8 +276,11 @@ class KISClient:
         - BUY
         - SELL
 
-        ORD_DVSN = "01" means market order in the common KIS domestic stock setting.
-        If your account/API rejects this value, check the latest KIS documentation.
+        Common domestic stock order setting:
+        - ORD_DVSN = "01" means market order
+        - ORD_UNPR = "0" for market order
+
+        This project is mock trading only.
         """
         if side not in {"BUY", "SELL"}:
             raise ValueError("side must be BUY or SELL")
