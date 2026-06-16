@@ -30,8 +30,8 @@ class Config:
     trading_start: dtime = dtime(9, 10)
     trading_end: dtime = dtime(15, 30)
 
-    poll_interval_seconds: int = 120
-    order_confirm_wait_seconds: int = 10
+    poll_interval_seconds: int = 180
+    order_confirm_wait_seconds: int = 20
 
     short_window: int = 3
     long_window: int = 8
